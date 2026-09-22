@@ -30,7 +30,7 @@ let resp = fizz_llm_client.call_streaming(
 
 ```toml
 [dependencies]
-fizz_llm_client = { git = "https://github.com/Aid-On/fizz-llm-client", tag = "v0.2.0" }
+fizz_llm_client = { git = "https://github.com/aiviecast/fizz-llm-client", tag = "v0.2.0" }
 ```
 
 ## Tests
