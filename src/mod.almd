@@ -165,7 +165,7 @@ fn build_openai_body(model: String, msgs: List[Message], opts: CallOptions, stre
 
 // ── レスポンス解析 (pure) ────────────────────────────────────────────
 
-local fn jget(v: Value, key: String) -> Value = value.get(v, key) ?? value.null()
+local fn jget(v: Value, key: String) -> Value = value.field(v, key) ?? value.null()
 
 local fn jstr(v: Value, key: String) -> String =
   result.unwrap_or(value.as_string(jget(v, key)), "")
