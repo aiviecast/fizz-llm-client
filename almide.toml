@@ -1,4 +1,4 @@
 [package]
 name = "fizz_llm_client"
-version = "0.2.0"
+version = "0.2.1"
 description = "Fizz brain — multi-provider LLM client (almai-shape interface over stdlib http.request). Drop-in for almide-ai/almai once it builds on current almide."
