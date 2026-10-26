@@ -12,7 +12,7 @@
 // 差し替えるだけで orchestrator 側は無改修で済む形にしてある。
 //
 // 非ストリーミング (call / call_with) は http.request POST で全文受信。
-// ストリーミング (call_streaming / call_streaming_with) は http.*_streaming_call
+// ストリーミング (call_streaming / call_streaming_with) は llm.*_streaming_call (package almide/llm)
 // で本文差分を on_delta に逐次渡しつつ最終 LLMResponse を返す。下流 (文分割 →
 // TTS) が生成完了を待たず最初の文から喋り出せるので first-audio latency を縮める。
 // (旧 almide v0.24/v0.25 は streaming callback の codegen バグで非ストリーミング
@@ -27,6 +27,7 @@
 import json
 import http
 import env
+import llm
 
 // ── 型 (almai 互換) ──────────────────────────────────────────────────
 
@@ -99,7 +100,7 @@ fn parse_provider(model_spec: String) -> Result[(Provider, String), String] = {
   let parts = string.split(model_spec, "/")
   guard list.len(parts) >= 2 else err("model spec must be '<provider>/<model>': ${model_spec}")
   let prefix = list.first(parts) ?? ""
-  let model = string.join(list.drop(parts, 1), "/")
+  let model = list.join(list.drop(parts, 1), "/")
   match provider_from_prefix(prefix) {
     ok(p)  => ok((p, model)),
     err(e) => err(e),
@@ -123,20 +124,20 @@ local fn non_system(msgs: List[Message]) -> List[Message] =
   list.filter(msgs, (m) => m.role != "system")
 
 local fn msg_to_value(m: Message) -> Value =
-  value.object([("role", value.str(m.role)), ("content", value.str(m.content))])
+  value.object([("role", value.string(m.role)), ("content", value.string(m.content))])
 
 // Anthropic Messages API: system は top-level、messages は user/assistant のみ。
 fn build_anthropic_body(model: String, msgs: List[Message], opts: CallOptions, stream: Bool) -> String = {
   let sys = collect_system(msgs, opts.system)
   let base = [
-    ("model", value.str(model)),
+    ("model", value.string(model)),
     ("max_tokens", value.int(opts.max_tokens)),
     ("temperature", value.float(opts.temperature)),
     ("messages", value.array(list.map(non_system(msgs), msg_to_value))),
   ]
-  let with_sys = if sys == "" then base else base + [("system", value.str(sys))]
+  let with_sys = if sys == "" then base else base + [("system", value.string(sys))]
   let with_stop = if list.is_empty(opts.stop) then with_sys
-                  else with_sys + [("stop_sequences", value.array(list.map(opts.stop, (s) => value.str(s))))]
+                  else with_sys + [("stop_sequences", value.array(list.map(opts.stop, (s) => value.string(s))))]
   // SSE には body に "stream": true が要る (Anthropic Messages API)。
   let with_stream = if stream then with_stop + [("stream", value.bool(true))] else with_stop
   json.stringify(value.object(with_stream))
@@ -148,15 +149,15 @@ fn build_openai_body(model: String, msgs: List[Message], opts: CallOptions, stre
   let head: List[Message] = if sys == "" then [] else [system(sys)]
   let all_msgs = head + non_system(msgs)
   let base = [
-    ("model", value.str(model)),
+    ("model", value.string(model)),
     ("max_tokens", value.int(opts.max_tokens)),
     ("temperature", value.float(opts.temperature)),
     ("messages", value.array(list.map(all_msgs, msg_to_value))),
   ]
   let with_stop = if list.is_empty(opts.stop) then base
-                  else base + [("stop", value.array(list.map(opts.stop, (s) => value.str(s))))]
+                  else base + [("stop", value.array(list.map(opts.stop, (s) => value.string(s))))]
   let with_json = if opts.json_mode then
-                    with_stop + [("response_format", value.object([("type", value.str("json_object"))]))]
+                    with_stop + [("response_format", value.object([("type", value.string("json_object"))]))]
                   else with_stop
   // OpenAI 互換も SSE には body に "stream": true が要る。
   let with_stream = if stream then with_json + [("stream", value.bool(true))] else with_json
@@ -165,7 +166,7 @@ fn build_openai_body(model: String, msgs: List[Message], opts: CallOptions, stre
 
 // ── レスポンス解析 (pure) ────────────────────────────────────────────
 
-local fn jget(v: Value, key: String) -> Value = value.field(v, key) ?? value.null()
+local fn jget(v: Value, key: String) -> Value = value.get(v, key) ?? value.null()
 
 local fn jstr(v: Value, key: String) -> String =
   result.unwrap_or(value.as_string(jget(v, key)), "")
@@ -264,7 +265,7 @@ effect fn call_with(model_spec: String, msgs: List[Message], opts: CallOptions) 
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
       ]
-      let resp = http.request("POST", "https://api.anthropic.com/v1/messages", body, headers)!
+      let resp = http.request("POST", "https://api.anthropic.com/v1/messages", body, map.to_list(headers))!
       ok(parse_anthropic_response(resp)!)
     },
     _ => {
@@ -273,7 +274,7 @@ effect fn call_with(model_spec: String, msgs: List[Message], opts: CallOptions) 
         "authorization": "Bearer ${key}",
         "content-type": "application/json",
       ]
-      let resp = http.request("POST", "${openai_base_url(provider)}/chat/completions", body, headers)!
+      let resp = http.request("POST", "${openai_base_url(provider)}/chat/completions", body, map.to_list(headers))!
       ok(parse_openai_response(resp)!)
     },
   }
@@ -284,7 +285,7 @@ effect fn call(model_spec: String, msgs: List[Message]) -> Result[LLMResponse, S
 
 // ── ストリーミング ───────────────────────────────────────────────────
 //
-// runtime (http.*_streaming_call) は SSE を読みながら on_delta に本文の差分を
+// runtime (llm.*_streaming_call (package almide/llm)) は SSE を読みながら on_delta に本文の差分を
 // 逐次渡し、最後に LLMResponse 形の正規化 JSON を返す:
 //   {"content":..,"model":..,"usage":{prompt/completion/total_tokens},"finish_reason":..}
 // → 下流 (文分割 → TTS) が生成完了を待たずに最初の文から喋り出せる。
@@ -320,12 +321,12 @@ effect fn call_streaming_with(
   match provider {
     Anthropic => {
       let body = build_anthropic_body(model, msgs, opts, true)
-      let raw = http.anthropic_streaming_call(key, body, on_delta)!
+      let raw = llm.anthropic_streaming_call(key, body, on_delta)!
       ok(parse_streaming_response(raw)!)
     },
     _ => {
       let body = build_openai_body(model, msgs, opts, true)
-      let raw = http.openai_streaming_call(openai_base_url(provider), key, body, on_delta)!
+      let raw = llm.openai_streaming_call(openai_base_url(provider), key, body, on_delta)!
       ok(parse_streaming_response(raw)!)
     },
   }

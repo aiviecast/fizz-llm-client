@@ -1,4 +1,7 @@
 [package]
 name = "fizz_llm_client"
-version = "0.2.1"
+version = "0.3.0"
 description = "Fizz brain — multi-provider LLM client (almai-shape interface over stdlib http.request). Drop-in for almide-ai/almai once it builds on current almide."
+
+[dependencies]
+llm = { git = "https://github.com/almide/llm", tag = "v0.2.0" }
